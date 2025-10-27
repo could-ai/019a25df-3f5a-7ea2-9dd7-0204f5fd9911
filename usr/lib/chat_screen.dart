@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:couldai_user_app/chat_message.dart';
 import 'package:couldai_user_app/message_bubble.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -11,20 +12,42 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
-  final List<ChatMessage> _messages = [
-    ChatMessage(text: 'Hi there!', sender: 'bot'),
-    ChatMessage(text: 'Hello!', sender: 'user'),
-  ];
+  
+  // The stream of messages from Supabase
+  final _messagesStream = Supabase.instance.client
+      .from('messages')
+      .stream(primaryKey: ['id'])
+      .order('created_at', ascending: false);
 
-  void _handleSubmitted(String text) {
+  Future<void> _handleSubmitted(String text) async {
+    final trimmedText = text.trim();
     _textController.clear();
-    if (text.trim().isEmpty) return;
+    if (trimmedText.isEmpty) return;
 
-    setState(() {
-      _messages.insert(0, ChatMessage(text: text, sender: 'user'));
-      // Simple echo bot response for demonstration
-      _messages.insert(0, ChatMessage(text: 'You said: $text', sender: 'bot'));
-    });
+    try {
+      await Supabase.instance.client.from('messages').insert({
+        'text': trimmedText,
+        'sender': 'user', // In a real app, this would be the logged-in user's ID
+      });
+    } on PostgrestException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error sending message: ${error.message}'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    } catch (error) {
+       if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('An unexpected error occurred.'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
   }
 
   Widget _buildTextComposer() {
@@ -60,13 +83,32 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(8.0),
-              reverse: true,
-              itemCount: _messages.length,
-              itemBuilder: (_, int index) => MessageBubble(
-                message: _messages[index],
-              ),
+            child: StreamBuilder<List<Map<String, dynamic>>>(
+              stream: _messagesStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+                if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                  return const Center(child: Text('Start the conversation!'));
+                }
+
+                final messages = snapshot.data!
+                    .map((map) => ChatMessage.fromMap(map))
+                    .toList();
+
+                return ListView.builder(
+                  padding: const EdgeInsets.all(8.0),
+                  reverse: true,
+                  itemCount: messages.length,
+                  itemBuilder: (_, int index) => MessageBubble(
+                    message: messages[index],
+                  ),
+                );
+              },
             ),
           ),
           const Divider(height: 1.0),
